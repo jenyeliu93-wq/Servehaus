@@ -1,0 +1,297 @@
+//// Ensure visibility of StrokeSegment and related types
+////import ServiceHausAI_test
+////
+////  PoseFeatureExtractor.swift
+////
+////  Purpose:
+////  Segments a detected tennis stroke into six biomechanical sub-phases.
+////
+////  Input:
+////    StrokeSegment {
+////        frames: [FramePoseResult]
+////        motionPoints: [MotionPoint]
+////    }
+////
+////  Output:
+////    [PhaseSegment] {
+////        phase: StrokeSubPhase
+////        confidence: Double
+////        frames: [FramePoseResult]
+////        motionPoints: [MotionPoint]
+////    }
+////
+////  Role:
+////  Acts as the first stage of feature extraction, bridging stroke detection and scoring.
+////  Each PhaseSegment represents a key motion stage (split step → recovery).
+////
+//
+//import Foundation
+//@preconcurrency internal import CoreMedia
+//import AVFoundation
+//import Vision
+//import CoreGraphics
+//
+//
+//
+//// MARK: - Subphase Enum
+///// Represents the six biomechanical sub-phases within a tennis stroke.
+//enum StrokeSubPhase: String, Codable, CaseIterable {
+//    case splitStep
+//    case backswing
+//    case racketDrop
+//    case acceleration
+//    case impact
+//    case followThrough
+//}
+//
+//// MARK: - Phase Segment Struct
+///// Represents a specific sub-phase segment with corresponding confidence.
+//struct PhaseSegment {
+//    let phase: StrokeSubPhase
+//    let confidence: Double
+//    let frames: [MotionPoint]  // Corrected from [FramePoseResult] to [MotionPoint]
+//    let score: Double
+//    let metrics: [String: Double]
+//    let formula: String
+//    let strokeId: UUID   // link to parent stroke
+//    let strokeType: StrokeType   // added here
+//
+//}
+//
+//// MARK: - PoseFeatureExtractor
+///// Identifies six sub-phases within a stroke using biomechanical motion patterns.
+///// Anchored at Phase 4 (Acceleration), the strongest energy event, and expands around it.
+//enum PoseFeatureExtractor {
+//
+//    /// Segments a stroke into six sub-phases based on biomechanical trends.
+//    /// - Parameter stroke: A detected stroke segment containing frame and motion data.
+//    /// - Returns: `[PhaseSegment]` – Each sub-phase with frames, motionPoints, and confidence.
+//    static func segmentPhases(from stroke: StrokeSegment) -> [PhaseSegment] {
+//        let motionPoints = stroke.frames
+//        guard !motionPoints.isEmpty else { return [] }
+//
+//        // 🔹 Step 1: Identify anchor – Phase 4 (Acceleration)
+//        // Use global energy maximum as the anchor point for the stroke.
+//        guard let maxEnergyIdx = motionPoints.enumerated().max(by: { $0.element.energy < $1.element.energy })?.offset else {
+//            return []
+//        }
+//
+//        let totalCount = motionPoints.count
+//
+//        // Helper closure to slice index range safely.
+//        func safeSlice(center: Int, backward: Int, forward: Int) -> ArraySlice<MotionPoint> {
+//            let start = max(0, center - backward)
+//            let end = min(totalCount - 1, center + forward)
+//            return motionPoints[start...end]
+//        }
+//
+//        // MARK: - Phase 4: Acceleration (Anchor)
+//        // Detected via steepest positive energy gradient and rotation zero-crossing.
+//        let accelWindow = safeSlice(center: maxEnergyIdx, backward: 2, forward: 2)
+//        let phase4 = PhaseSegment(
+//            phase: .acceleration,
+//            confidence: 0.9,
+//            frames: Array(accelWindow), // Corrected to use motionPoints slice
+//            score: 0,
+//            metrics: [:],
+//            formula: "",
+//            strokeId: stroke.id,   // ✅ added
+//            strokeType: stroke.type  // ✅ added
+//
+//
+//        )
+//
+//        // MARK: - Phase 5: Impact (after Acceleration)
+//        // Slightly after energy peak; wrist offset and hip-shoulder separation near neutral.
+//        let impactWindow = safeSlice(center: maxEnergyIdx + 1, backward: 0, forward: 1)
+//        let impactConfidence = impactWindow.map { mp in
+//            let wristExt = abs(mp.wristOffset)
+//            let sep = abs(mp.sep)
+//            return wristExt > 0.1 && sep < 10 ? 0.85 : 0.6
+//        }.max() ?? 0.7
+//        let phase5 = PhaseSegment(
+//            phase: .impact,
+//            confidence: impactConfidence,
+//            frames: Array(impactWindow), // Corrected to use motionPoints slice
+//            score: 0,
+//            metrics: [:],
+//            formula: "",
+//            strokeId: stroke.id,   // ✅ added
+//            strokeType: stroke.type  // ✅ added
+//        )
+//
+//        // MARK: - Phase 3: Racket Drop (before Acceleration)
+//        // Local minimum before the energy ramp-up; wrist.y below shoulder/elbow level.
+//        let dropIdx = max(0, maxEnergyIdx - 3)
+//        let dropWindow = safeSlice(center: dropIdx, backward: 2, forward: 2)
+//        let dropConfidence = dropWindow.map { mp in mp.energy < 0.5 * motionPoints[maxEnergyIdx].energy ? 0.7 : 0.5 }.max() ?? 0.6
+//        let phase3 = PhaseSegment(
+//            phase: .racketDrop,
+//            confidence: dropConfidence,
+//            frames: Array(dropWindow), // Corrected to use motionPoints slice
+//            score: 0,
+//            metrics: [:],
+//            formula: "",
+//            strokeId: stroke.id,   // ✅ added
+//            strokeType: stroke.type
+//
+//        )
+//
+//        // MARK: - Phase 2: Backswing
+//        // Steadily decreasing rotation sign (rotSign < 0) and increasing separation.
+//        let backswingWindow = safeSlice(center: max(0, dropIdx - 3), backward: 3, forward: 2)
+//        let backswingConfidence = backswingWindow.map { mp in (mp.rotSign < 0 && abs(mp.sep) > 20) ? 0.8 : 0.5 }.max() ?? 0.6
+//        let phase2 = PhaseSegment(
+//            phase: .backswing,
+//            confidence: backswingConfidence,
+//            frames: Array(backswingWindow), // Corrected to use motionPoints slice
+//            score: 0,
+//            metrics: [:],
+//            formula: "",
+//            strokeId: stroke.id,   // ✅ added
+//            strokeType: stroke.type  // ✅ added
+//
+//        )
+//
+//        // MARK: - Phase 1: Split Step (Preparation)
+//        // Identified by small transient spike in low baseline energy.
+//        let splitIdx = max(0, backswingWindow.startIndex - 3)
+//        let splitWindow = safeSlice(center: splitIdx, backward: 1, forward: 1)
+//        let splitConfidence = splitWindow.map { mp in mp.energy < 0.2 * motionPoints[maxEnergyIdx].energy ? 0.6 : 0.3 }.max() ?? 0.4
+//        let phase1 = PhaseSegment(
+//            phase: .splitStep,
+//            confidence: splitConfidence,
+//            frames: Array(splitWindow), // Corrected to use motionPoints slice
+//            score: 0,
+//            metrics: [:],
+//            formula: "",
+//            strokeId: stroke.id,   // ✅ added
+//            strokeType: stroke.type  // ✅ added
+//
+//        )
+//
+//        // MARK: - Phase 6: Follow-Through
+//        // Gradual energy decay, rotation stabilizes back to baseline.
+//        let followIdx = min(totalCount - 1, maxEnergyIdx + 3)
+//        let followWindow = safeSlice(center: followIdx, backward: 2, forward: 4)
+//        let followConfidence = followWindow.map { mp in mp.energy < 0.4 * motionPoints[maxEnergyIdx].energy ? 0.75 : 0.5 }.max() ?? 0.6
+//        let phase6 = PhaseSegment(
+//            phase: .followThrough,
+//            confidence: followConfidence,
+//            frames: Array(followWindow), // Corrected to use motionPoints slice
+//            score: 0,
+//            metrics: [:],
+//            formula: "",
+//            strokeId: stroke.id,   // ✅ added
+//            strokeType: stroke.type  // ✅ added
+//
+//        )
+//
+//        // ✅ Return ordered list of all phases.
+//        return [phase1, phase2, phase3, phase4, phase5, phase6]
+//    }
+//
+//
+//    /// Computes per-phase score using key biomechanical metrics.
+//    /// Output: [PhaseSegment] with phase, score, metrics, and formula.
+//    static func computeScores(for phases: [PhaseSegment]) -> [PhaseSegment] {
+//        func normalize(_ values: [Double]) -> [Double] {
+//            guard let minVal = values.min(), let maxVal = values.max(), maxVal > minVal else {
+//                return values.map { _ in 0.5 }
+//            }
+//            return values.map { ($0 - minVal) / (maxVal - minVal) }
+//        }
+//
+//        return phases.map { phaseSegment in
+//            let frames = phaseSegment.frames
+//            switch phaseSegment.phase {
+//            case .splitStep, .backswing, .racketDrop, .followThrough:
+//                let avgEnergy = frames.map { $0.energy }.reduce(0, +) / Double(frames.count)
+//                let score = phaseSegment.confidence * 100
+//                let metrics: [String: Double] = ["energy": Double(avgEnergy)]
+//                let formula = "score = confidence * 100"
+//                return PhaseSegment(
+//                    phase: phaseSegment.phase,
+//                    confidence: phaseSegment.confidence,
+//                    frames: frames,
+//                    score: score,
+//                    metrics: metrics,
+//                    formula: formula,
+//                    strokeId: phaseSegment.strokeId,
+//                    strokeType: phaseSegment.strokeType // ✅ fixed placeholder
+//
+//                )
+//            case .acceleration:
+//                let energies = frames.map { $0.energy }
+//                let rotSigns = frames.map { $0.rotSign }
+////                let normEnergy = normalize(energies)
+////                let normRot = normalize(rotSigns)
+//                let normEnergy = normalize(energies.map { Double($0) })
+//                let normRot = normalize(rotSigns.map { Double($0) })
+//                let avgEnergy = energies.reduce(0, +) / Double(frames.count)
+//                let avgRot = rotSigns.reduce(0, +) / Double(frames.count)
+//                let combinedScore = zip(normEnergy, normRot).map { 0.6 * $0 + 0.4 * $1 }
+//                let avgCombined = combinedScore.reduce(0, +) / Double(combinedScore.count)
+//                let score = 100 * avgCombined
+//                let metrics: [String: Double] = ["energy": Double(avgEnergy), "rotSign": Double(avgRot)]
+//                let formula = "0.6 * norm(energy) + 0.4 * norm(rotSign)"
+//                return PhaseSegment(
+//                    phase: phaseSegment.phase,
+//                    confidence: phaseSegment.confidence,
+//                    frames: frames,
+//                    score: score,
+//                    metrics: metrics,
+//                    formula: formula,
+//                    strokeId: phaseSegment.strokeId,
+//                    strokeType: phaseSegment.strokeType // ✅ fixed placeholder
+//// ✅ use existing stored ID
+//
+//                )
+//            case .impact:
+//                let wristOffsets = frames.map { abs($0.wristOffset) }
+//                let energies = frames.map { $0.energy }
+//                let normWrist = normalize(wristOffsets.map { Double($0) })
+//                let normEnergy = normalize(energies.map { Double($0) })
+//                let avgWrist = wristOffsets.reduce(0, +) / Double(frames.count)
+//                let avgEnergy = energies.reduce(0, +) / Double(frames.count)
+//                let combinedScore = zip(normWrist, normEnergy).map { 0.6 * $0 + 0.4 * $1 }
+//                let avgCombined = combinedScore.reduce(0, +) / Double(combinedScore.count)
+//                let score = 100 * avgCombined
+//                let metrics: [String: Double] = ["wristOffset": Double(avgWrist), "energy": Double(avgEnergy)]
+//                let formula = "0.6 * norm(wristOffset) + 0.4 * norm(energy)"
+//                return PhaseSegment(
+//                    phase: phaseSegment.phase,
+//                    confidence: phaseSegment.confidence,
+//                    frames: frames,
+//                    score: score,
+//                    metrics: metrics,
+//                    formula: formula,
+//                    strokeId: phaseSegment.strokeId,
+//                    strokeType: phaseSegment.strokeType // ✅ fixed placeholder
+//
+//
+//                )
+//            }
+//        }
+//    }
+//}
+//
+//// MARK: - Unified feature extraction pipeline
+//extension PoseFeatureExtractor {
+//    /// Runs full feature extraction pipeline:
+//    /// 1. Segments strokes into sub-phases.
+//    /// 2. Computes phase-level scores.
+//    /// - Parameter strokeSegments: All detected stroke segments.
+//    /// - Returns: Flattened array of PhaseSegments with computed scores.
+//    static func extractFeatures(from strokeSegments: [StrokeSegment]) async -> [PhaseSegment] {
+//        var allPhases: [PhaseSegment] = []
+//        for stroke in strokeSegments {
+//            // Step 1: segment into six biomechanical subphases
+//            let rawPhases = segmentPhases(from: stroke)
+//            // Step 2: compute per-phase metrics and scores
+//            let scoredPhases = computeScores(for: rawPhases)
+//            allPhases.append(contentsOf: scoredPhases)
+//        }
+//        return allPhases
+//    }
+//}
