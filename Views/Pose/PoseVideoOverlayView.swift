@@ -28,155 +28,244 @@ struct PoseVideoOverlayView: View {
     @State private var currentTimeSeconds: Double = 0.0
     @State private var timeObserver: Any?
     @Environment(\.presentationMode) private var presentationMode
+    @EnvironmentObject var sessionManager: SessionManager
 
     var onAnalysisComplete: ((SessionGradingResult) -> Void)? = nil
 
-    init(videoURL: URL, onAnalysisComplete: ((SessionGradingResult) -> Void)? = nil) {
-        self.videoURL = videoURL
+//    private static var analyzedVideos: Set<URL> = []
+    internal static var analyzedVideos: Set<URL> = []
+
+    init(videoURL: URL?, onAnalysisComplete: ((SessionGradingResult) -> Void)? = nil) {
+        if let safeURL = videoURL, FileManager.default.fileExists(atPath: safeURL.path), !safeURL.path.isEmpty {
+            self.videoURL = safeURL
+            _player = State(initialValue: AVPlayer(url: safeURL))
+        } else {
+            self.videoURL = URL(fileURLWithPath: "/dev/null")
+            _player = State(initialValue: AVPlayer())
+        }
         self.onAnalysisComplete = onAnalysisComplete
-        _player = State(initialValue: AVPlayer(url: videoURL))
     }
 
     var body: some View {
-        ZStack {
-            // Video Player
-            VideoPlayer(player: player)
-                .onAppear {
-                    analyzeVideo()
-                    attachTimeObserver()
-                }
-                .onDisappear {
-                    player.pause()
-                    detachTimeObserver()
-                }
-            
-            VStack(alignment: .leading) {
-                if let activePhase = phaseSegments.first(where: { phase in
-                    phase.frames.contains { mp in
-                        abs(mp.time.seconds - player.currentTime().seconds) < 0.05
-                    }
-                }),
-                let strokeType = sessionResult?.strokeSegments.first(where: { $0.phases.contains(where: { $0.phase == activePhase.phase }) })?.type {
-                    Text("🎾 Stroke: \(strokeType == .forehand ? "Forehand" : "Backhand")")
-                        .font(.headline)
-                        .foregroundColor(.green)
-                    Text("Phase: \(activePhase.phase.rawValue.capitalized)")
-                        .font(.subheadline)
-                        .foregroundColor(.yellow)
-                }
-                Spacer()
-            }
-            .padding(.top, 60)
-            .padding(.leading, 20)
-
-            // Pose Overlay
-            PoseOverlayView(joints: currentJoints, activeRegion: activeRegion)
-                .allowsHitTesting(false)
-
-            // Analysis Progress
-            if isAnalyzing {
-                VStack {
-                    ProgressView("Analyzing video…", value: analysisProgress, total: 1.0)
-                        .padding()
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(12)
-                }
-            }
-
-            // Dismiss Button
-            VStack {
-                HStack {
+        Group {
+            if sessionManager.videoURL == nil {
+                VStack(spacing: 16) {
                     Spacer()
-                    Button(action: {
-                        player.pause()
-                        presentationMode.wrappedValue.dismiss()
-                    }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(.white)
-                            .padding()
-                    }
+                    Image(systemName: "film.stack")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 80, height: 80)
+                        .foregroundStyle(.gray)
+                    Text("No video available")
+                        .font(.headline)
+                    Text("Please return to the Video tab to upload or record a video.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                    Spacer()
                 }
-                Spacer()
-            }
-        }
-        .ignoresSafeArea()
-        VStack(spacing: 12) {
-            HStack {
-                Text("📊 Metric Trends")
-                    .font(.headline)
-                Spacer()
-                Picker("Metric", selection: $selectedMetric) {
-                    Text("shoulderSpan").tag("shoulderSpan")
-                    Text("hipSpan").tag("hipSpan")
-                    Text("footSpan").tag("footSpan")
-                    Text("shoulderCoilFactor").tag("shoulderCoilFactor")
-                    Text("hipCoilFactor").tag("hipCoilFactor")
-                    Text("wristHeightRel").tag("wristHeightRel")
-                    Text("wristXOffsetRel").tag("wristXOffsetRel")
-                    Text("forearmAngularSpeed").tag("forearmAngularSpeed")
-                    Text("wristLinearSpeed").tag("wristLinearSpeed")
-                    Text("rotSign").tag("rotSign")
-                    Text("COMspeed").tag("COMspeed")
-                    Text("handSpeedRatio").tag("handSpeedRatio")
-                    Text("energyRearHybrid").tag("energyRearHybrid")
-                }
-                .pickerStyle(MenuPickerStyle())
-                .frame(width: 180)
-            }
-            MetricTrendChartView(
-                motionPoints: motionPoints,
-                phaseSegments: phaseSegments,
-                selectedMetric: selectedMetric,
-                currentTime: currentTimeSeconds
-            )
-            .frame(height: 200)
-        }
-        .background(.ultraThinMaterial)
-        .cornerRadius(12)
-        .padding(.horizontal)
-        .sheet(isPresented: $showResults) {
-            if let result = sessionResult {
-                GradingReportTabView(result: result)
-                    .onAppear {
-                        analysisProgress = 1.0
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.systemGroupedBackground))
+                .ignoresSafeArea()
+            } else {
+                ScrollView {
+                    ZStack {
+                        ZStack {
+                            VideoPlayer(player: player)
+                                .onTapGesture {
+                                    if player.timeControlStatus == .playing {
+                                        player.pause()
+                                    } else {
+                                        player.play()
+                                    }
+                                }
+                                .onAppear {
+                                    if player.currentItem == nil {
+                                        player.replaceCurrentItem(with: AVPlayerItem(url: videoURL))
+                                    }
+
+                                    // 🔒 确保只触发一次分析流程
+                                    if sessionManager.phase == .ready && !sessionManager.isAnalyzing {
+                                        sessionManager.isAnalyzing = true
+                                        sessionManager.phase = .analyzing
+                                        withAnimation(.easeInOut(duration: 0.8)) {
+                                            analysisProgress = 0.01
+                                        }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                            analyzeVideo()
+                                        }
+                                    }
+
+                                    player.play()
+                                    attachTimeObserver()
+                                }
+                                .onDisappear {
+                                    // ⚙️ 暂停播放但不重置状态
+                                    player.pause()
+                                    detachTimeObserver()
+                                }
+
+                            if player.timeControlStatus != .playing {
+                                Image(systemName: "play.circle.fill")
+                                    .resizable()
+                                    .frame(width: 64, height: 64)
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        // Pose Overlay
+                        PoseOverlayView(joints: currentJoints, activeRegion: activeRegion)
+                            .allowsHitTesting(false)
+                        // Stroke Info
+                        VStack(alignment: .leading) {
+                            if let activePhase = phaseSegments.first(where: { phase in
+                                phase.frames.contains { mp in
+                                    abs(mp.time.seconds - player.currentTime().seconds) < 0.05
+                                }
+                            }),
+                            let strokeType = sessionResult?.strokeSegments.first(where: { $0.phases.contains(where: { $0.phase == activePhase.phase }) })?.type {
+                                Text("🎾 Stroke: \(strokeType == .forehand ? "Forehand" : "Backhand")")
+                                    .font(.headline)
+                                    .foregroundColor(.green)
+                                Text("Phase: \(activePhase.phase.rawValue.capitalized)")
+                                    .font(.subheadline)
+                                    .foregroundColor(.yellow)
+                            }
+                            Spacer()
+                        }
+                        .padding(.top, 60)
+                        .padding(.leading, 20)
+                        // Dismiss Button
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Button(action: {
+                                    player.pause()
+                                    presentationMode.wrappedValue.dismiss()
+                                }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 28))
+                                        .foregroundColor(.white)
+                                        .padding()
+                                }
+                            }
+                            Spacer()
+                        }
                     }
+                    .frame(height: 360)
+                    .overlay(
+                        Group {
+                            if isAnalyzing  {
+                                VStack(spacing: 8) {
+                                    ProgressView(value: analysisProgress)
+                                        .progressViewStyle(LinearProgressViewStyle())
+                                        .frame(width: 200)
+                                    Text(String(format: "Analyzing video… %.0f%%", analysisProgress * 100))
+                                        .font(.footnote)
+                                        .foregroundColor(.white)
+                                }
+                                .padding()
+                                .background(.ultraThinMaterial)
+                                .cornerRadius(12)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                    )
+                    
+                    VStack(spacing: 12) {
+                        HStack {
+                            Text("📊 Metric Trends")
+                                .font(.headline)
+                            Spacer()
+                            Picker("Metric", selection: $selectedMetric) {
+                                Text("shoulderSpan").tag("shoulderSpan")
+                                Text("hipSpan").tag("hipSpan")
+                                Text("footSpan").tag("footSpan")
+                                Text("shoulderCoilFactor").tag("shoulderCoilFactor")
+                                Text("hipCoilFactor").tag("hipCoilFactor")
+                                Text("wristHeightRel").tag("wristHeightRel")
+                                Text("wristXOffsetRel").tag("wristXOffsetRel")
+                                Text("forearmAngularSpeed").tag("forearmAngularSpeed")
+                                Text("wristLinearSpeed").tag("wristLinearSpeed")
+                                Text("rotSign").tag("rotSign")
+                                Text("COMspeed").tag("COMspeed")
+                                Text("handSpeedRatio").tag("handSpeedRatio")
+                                Text("energyRearHybrid").tag("energyRearHybrid")
+                            }
+                            .pickerStyle(MenuPickerStyle())
+                            .frame(width: 180)
+                        }
+                        MetricTrendChartView(
+                            motionPoints: motionPoints,
+                            phaseSegments: phaseSegments,
+                            selectedMetric: selectedMetric,
+                            currentTime: currentTimeSeconds
+                        )
+                        .frame(height: 200)
+                    }
+                    .padding(.horizontal)
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(12)
+                    .padding(.vertical)
+                }
+                .ignoresSafeArea()
             }
         }
     }
 
     // MARK: - Video Analysis
     private func analyzeVideo() {
+        guard !Self.analyzedVideos.contains(videoURL) else {
+            print("⚠️ Skipping duplicate analysis for \(videoURL.lastPathComponent)")
+            return
+        }
+        Self.analyzedVideos.insert(videoURL)
         Task.detached(priority: .userInitiated) {
+            // Set isAnalyzing to true on main thread before starting analysis
+            await MainActor.run {
+                sessionManager.isAnalyzing = true
+            }
             do {
                 let frames = try await VideoPoseExtractor.extractPoses(from: videoURL, frameInterval: 0.3) { progress in
                     DispatchQueue.main.async {
-                        analysisProgress = progress
+//                        analysisProgress = progress * 0.5
+                        smoothProgress(to: progress * 0.5)
                     }
                 }
+                await MainActor.run {
+                    self.extractedFrames = frames
+                }
+
                 let result = try await StrokeAnalysisPipeline.analyze(
                     videoURL: videoURL,
                     progressCallback: { progress in
                         DispatchQueue.main.async {
-                            self.analysisProgress = 0.5 + 0.5 * progress
+                            let target = 0.5 + 0.5 * progress
+                            smoothProgress(to: target)
                         }
                     }
                 )
                 await MainActor.run {
-                    self.extractedFrames = frames
-                    self.isAnalyzing = false
-                    self.player.pause()
-                    self.sessionResult = result
-                    self.onAnalysisComplete?(result)
-                    self.motionPoints = result.strokeSegments.flatMap { $0.frames }
-                    self.phaseSegments = result.strokeSegments.flatMap { $0.phases }
-                    self.showResults = true
-                    self.analysisProgress = 1.0
-//                    self.sessionResult = result
+                    sessionManager.result = result
+                    sessionManager.phase = .completed
+                    sessionResult = result
+                    motionPoints = result.strokeSegments.flatMap { $0.frames }
+                    phaseSegments = result.strokeSegments.flatMap { $0.phases }
+                    analysisProgress = 1.0
                 }
             } catch {
+                await MainActor.run {
+                    self.isAnalyzing = false
+                }
                 print("Pose extraction failed: \(error)")
             }
+        }
+    }
+
+    private func smoothProgress(to target: Double) {
+        withAnimation(.linear(duration: 0.5)) {
+            analysisProgress = target
         }
     }
 
@@ -202,7 +291,9 @@ struct PoseVideoOverlayView: View {
         guard !isAnalyzing else { return }
         let currentSeconds = currentTime.seconds
         if let closestFrame = extractedFrames.min(by: { abs($0.time.seconds - currentSeconds) < abs($1.time.seconds - currentSeconds) }) {
-            currentJoints = closestFrame.joints
+            DispatchQueue.main.async {
+                currentJoints = closestFrame.joints
+            }
         }
     }
 }

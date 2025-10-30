@@ -25,6 +25,23 @@ class StrokeAnalysisPipeline {
         let frameResults: [FramePoseResult] = try await VideoPoseExtractor.extractPoses(from: videoURL)
         await MainActor.run { progressCallback(0.20) }
 
+        // Guard for insufficient frames
+        // Guard for insufficient frames
+        guard frameResults.count > 1 else {
+            print("⚠️ No sufficient frames found — cannot analyze video.")
+            await MainActor.run { progressCallback(1.0) }
+            return SessionGradingResult(
+                bestForehandURL: videoURL,
+                bestBackhandURL: videoURL,
+                forehandScore: StrokeScore(strokeId: UUID(), strokeType: .forehand, phaseScores: [], totalScore: 0, subMetrics: [:]),
+                backhandScore: StrokeScore(strokeId: UUID(), strokeType: .backhand, phaseScores: [], totalScore: 0, subMetrics: [:]),
+                frameResults: [],
+                strokeSegments: [],
+                strokeScores: [],
+                videoScore: VideoScore(strokes: [], forehandAvg: 0.0, backhandAvg: 0.0, overall: 0.0)
+            )
+        }
+
         // MARK: Step 2 - Extract motion-level features (MotionPoint)
         let motionPoints: [MotionPoint] = await withTaskGroup(of: MotionPoint?.self) { group in
             for i in 1..<frameResults.count {

@@ -7,25 +7,87 @@
 
 import SwiftUI
 import AVFoundation
+import AVKit
 
 struct CameraContainerView: View {
-    @Binding var videoURL: URL? // Binding to the parent SessionManager's videoURL
-    @Binding var isConfirming: Bool
+    @ObservedObject var sessionManager: SessionManager
+    @State private var tempVideoURL: URL? = nil
+    @State private var isConfirming = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        if let url = videoURL {
-            PoseVideoOverlayView(videoURL: url)
-        } else {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                CameraView { url in
-                    videoURL = url
-                    isConfirming = true
-                    // Transition back to main tab interface can be handled here if needed
+        ZStack {
+            if let tempURL = tempVideoURL, isConfirming {
+                VStack(spacing: 20) {
+                    Text("Preview your recording")
+                        .font(.title2)
+                        .foregroundColor(.white)
+
+                    VideoPlayer(player: AVPlayer(url: tempURL))
+                        .frame(height: 280)
+                        .cornerRadius(8)
+                        .padding()
+
+                    HStack(spacing: 40) {
+                        Button(action: {
+                            sessionManager.videoURL = tempURL
+                            sessionManager.isAnalyzing = true
+                            sessionManager.phase = .ready
+                            sessionManager.currentTab = .overlay
+                            DispatchQueue.main.async {
+                                dismiss()
+                            }
+                            tempVideoURL = nil
+                            isConfirming = false
+                        }) {
+                            Text("Confirm")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        }
+
+                        Button(action: {
+                            try? FileManager.default.removeItem(at: tempURL)
+                            tempVideoURL = nil
+                            isConfirming = false
+                        }) {
+                            Text("Re-record")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 30)
                 }
-                .ignoresSafeArea()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-//                .background(Color.black)
+                .background(Color.black.edgesIgnoringSafeArea(.all))
+            } else {
+                CameraView { url in
+                    tempVideoURL = url
+                    isConfirming = true
+                }
+                .edgesIgnoringSafeArea(.all)
+            }
+            VStack {
+                HStack {
+                    Button(action: {
+                        dismiss()
+                    }) {
+                        Image(systemName: "xmark")
+                            .foregroundColor(.white)
+                            .padding()
+                            .background(Color.black.opacity(0.5))
+                            .clipShape(Circle())
+                    }
+                    Spacer()
+                }
+                .padding(.top, 44)
+                .padding(.horizontal)
+                Spacer()
             }
         }
     }
@@ -59,12 +121,19 @@ struct CameraView: UIViewControllerRepresentable {
             setupSession()
             setupPreview()
             setupRecordButton()
-            DispatchQueue.global(qos: .userInitiated).async {
-                self.captureSession.startRunning()
-            }
         }
 
         private func setupSession() {
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                if granted {
+                    self.configureSession()
+                } else {
+                    print("Camera access denied")
+                }
+            }
+        }
+
+        private func configureSession() {
             captureSession.beginConfiguration()
             captureSession.sessionPreset = .high
 
@@ -73,6 +142,7 @@ struct CameraView: UIViewControllerRepresentable {
                   let videoInput = try? AVCaptureDeviceInput(device: backCamera),
                   captureSession.canAddInput(videoInput) else {
                 print("Cannot access back camera")
+                captureSession.commitConfiguration()
                 return
             }
             captureSession.addInput(videoInput)
@@ -89,6 +159,9 @@ struct CameraView: UIViewControllerRepresentable {
                 captureSession.addOutput(movieOutput)
             }
             captureSession.commitConfiguration()
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.captureSession.startRunning()
+            }
         }
 
         private func setupPreview() {
@@ -106,7 +179,6 @@ struct CameraView: UIViewControllerRepresentable {
         private func setupRecordButton() {
             recordButton.translatesAutoresizingMaskIntoConstraints = false
             recordButton.backgroundColor = .red
-//            recordButton.setTitle("Record", for: .normal)
             recordButton.setTitleColor(.white, for: .normal)
             recordButton.layer.cornerRadius = 32
             recordButton.titleLabel?.font = UIFont.boldSystemFont(ofSize: 18)
@@ -126,6 +198,11 @@ struct CameraView: UIViewControllerRepresentable {
                 recordButton.setTitle("Record", for: .normal)
                 recordButton.backgroundColor = .red
             } else {
+                guard captureSession.isRunning,
+                      movieOutput.connections.contains(where: { $0.isActive }) else {
+                    print("Capture session is not ready")
+                    return
+                }
                 let outputURL = FileManager.default.temporaryDirectory
                     .appendingPathComponent(UUID().uuidString)
                     .appendingPathExtension("mov")

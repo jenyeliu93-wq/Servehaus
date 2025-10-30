@@ -18,49 +18,90 @@ import AVKit
  Highlight clips are already available directly via SessionGradingResult, so VideoClipExporter is no longer used.
  */
 
+
 struct GradingReportTabView: View {
-    let result: SessionGradingResult
-    var onNewSession: (() -> Void)?
-    
+    @EnvironmentObject var sessionManager: SessionManager
+
     var body: some View {
-        VStack(spacing: 16) {
-            sessionOverview
-            Divider()
+        if let result = sessionManager.result {
             ScrollView {
-                VStack(spacing: 24) {
-                    strokeHighlightSection(type: .forehand, highlightURL: result.bestForehandURL)
-                    strokeHighlightSection(type: .backhand, highlightURL: result.bestBackhandURL)
+                
+                VStack(spacing: 20) {
+                    // Section 1: Summary & Radar
+                    sessionOverview(result: result)
+
+                    Divider()
+
+                    // Section 2: Forehand Highlight
+                    let fhURL = result.bestForehandURL
+                    strokeHighlightSection(type: .forehand, highlightURL: fhURL, result: result)
+
+                    Divider()
+
+                    // Section 3: Backhand Highlight
+                    let bhURL = result.bestBackhandURL
+                    strokeHighlightSection(type: .backhand, highlightURL: bhURL, result: result)
+
+                    Divider()
+
+                    // Section 4: Coach Tips
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("💡 Coach Tips")
+                            .font(.headline)
+                        Text("Improve timing and follow-through for consistent power and accuracy. Focus on stability during impact and controlled acceleration.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
-                .padding(.bottom)
+                .padding(.vertical)
             }
-            Button(action: {
-                onNewSession?()
-            }) {
-                Text("New Session")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 12)
-                    .background(Color.accentColor)
-                    .cornerRadius(10)
+            .padding()
+        } else if sessionManager.isAnalyzing {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Report generating... Please wait.")
+                    .foregroundColor(.secondary)
+                    .italic()
             }
-            .padding(.bottom, 20)
-        }
-        .onAppear {
-            setupSessionScores()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
+            .ignoresSafeArea()
+        } else {
+            VStack {
+                Spacer()
+                VStack(spacing: 16) {
+                    Image(systemName: "chart.bar.doc.horizontal")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 80, height: 80)
+                        .foregroundStyle(.gray)
+                    Text("No report available")
+                        .font(.headline)
+                    Text("Please analyze a video first in the Video tab.")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                }
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemGroupedBackground))
+            .ignoresSafeArea()
         }
     }
+}
     
     // MARK: - Session Overview
     
-    private var sessionOverview: some View {
+    private func sessionOverview(result: SessionGradingResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
 //            Text("Session Overview")
 //                .font(.title2)
 //                .bold()
 //                .padding(.horizontal)
-//            
+//
             HStack(alignment: .top, spacing: 16) {
                 // ServeHaus Index Capsule
                 let rawScore = Int(result.videoScore.overall.rounded())
@@ -127,7 +168,7 @@ struct GradingReportTabView: View {
     
     // MARK: - Stroke Highlight Section
     
-    private func strokeHighlightSection(type: StrokeType, highlightURL: URL) -> some View {
+    private func strokeHighlightSection(type: StrokeType, highlightURL: URL, result: SessionGradingResult) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(type == .forehand ? "🎬 Forehand Highlight" : "🎬 Backhand Highlight")
                 .font(.headline)
@@ -153,9 +194,9 @@ struct GradingReportTabView: View {
                 
                 // Key metrics: Acceleration / Impact / Completeness
                 HStack(spacing: 16) {
-                    metricView(name: "Acceleration", value: metricValue(for: type, key: "Acceleration"))
-                    metricView(name: "Impact", value: metricValue(for: type, key: "Impact"))
-                    metricView(name: "Completeness", value: metricValue(for: type, key: "Completeness"))
+                    metricView(name: "Acceleration", value: metricValue(for: type, key: "Acceleration", result: result))
+                    metricView(name: "Impact", value: metricValue(for: type, key: "Impact", result: result))
+                    metricView(name: "Completeness", value: metricValue(for: type, key: "Completeness", result: result))
                 }
                 
                 // Tip label for visual coaching feedback
@@ -179,7 +220,7 @@ struct GradingReportTabView: View {
         .frame(minWidth: 80)
     }
     
-    private func metricValue(for type: StrokeType, key: String) -> Double {
+    private func metricValue(for type: StrokeType, key: String, result: SessionGradingResult) -> Double {
         // Compute average metric value for the stroke type
         let strokes = result.videoScore.strokes.filter { $0.strokeType == type }
         let values = strokes.compactMap { $0.subMetrics[key] }
@@ -189,7 +230,7 @@ struct GradingReportTabView: View {
     
     // MARK: - Private Methods
     
-    private func setupSessionScores() {
+    private func setupSessionScores(result: SessionGradingResult) {
         // The data now maps from frame → stroke → video → UI
         // We aggregate all subMetrics from all strokes to compute session-level averages
         // subMetrics is now a dictionary [String: Double], so we compute averages accordingly
@@ -219,7 +260,7 @@ struct GradingReportTabView: View {
         // Example: floor to nearest multiple of 5
         return (score / 5) * 5
     }
-}
+
 
 // VideoPlayerView now applies slow motion playback at 0.5× rate using AVPlayer.playImmediately(atRate:)
 // This change affects only local playback within this tab view and does not affect the data pipeline.
