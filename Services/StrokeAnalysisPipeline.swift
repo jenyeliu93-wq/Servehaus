@@ -83,8 +83,8 @@ class StrokeAnalysisPipeline {
 
 
         // MARK: Step 6 - Export best clips for each stroke type
-        async let bestForehandURL = exportBestClip(for: .forehand, from: strokeSegments, using: strokeScores, videoURL: videoURL)
-        async let bestBackhandURL = exportBestClip(for: .backhand, from: strokeSegments, using: strokeScores, videoURL: videoURL)
+        async let bestForehandURL = exportBestClip(for: .forehand, from: strokeSegments, using: strokeScores, videoURL: videoURL, progressCallback: progressCallback)
+        async let bestBackhandURL = exportBestClip(for: .backhand, from: strokeSegments, using: strokeScores, videoURL: videoURL, progressCallback: progressCallback)
         let (finalForehandURL, finalBackhandURL) = await (bestForehandURL, bestBackhandURL)
 
         // MARK: Step 7 - Return complete session result
@@ -101,7 +101,7 @@ class StrokeAnalysisPipeline {
     }
     
     /// Helper to export the best clip for a given stroke type based on highest score.
-    private static func exportBestClip(for strokeType: StrokeType, from strokeSegments: [StrokeSegment], using strokeScores: [StrokeScore], videoURL: URL) async -> URL {
+    private static func exportBestClip(for strokeType: StrokeType, from strokeSegments: [StrokeSegment], using strokeScores: [StrokeScore], videoURL: URL, progressCallback: @escaping (Double) -> Void) async -> URL {
         struct StrokeEvent {
             let type: StrokeType
             let startTime: Double
@@ -138,25 +138,13 @@ class StrokeAnalysisPipeline {
         exportSession.timeRange = timeRange
         exportSession.shouldOptimizeForNetworkUse = true
         
-//        return await withCheckedContinuation { continuation in
-//            Task.detached {
-//                for await state in exportSession.states(updateInterval: 0.2) {
-//                    if case .completed = state.status {
-//                        continuation.resume(returning: outputURL)
-//                        return
-//                    } else if case .failed = state.status {
-//                        continuation.resume(returning: videoURL)
-//                        return
-//                    } else if case .cancelled = state.status {
-//                        continuation.resume(returning: videoURL)
-//                        return
-//                    }
-//                }
-//            }
+        await MainActor.run { progressCallback(0.8) }
+        
         return await withCheckedContinuation { continuation in
             Task.detached {
                 do {
                     try await exportSession.export(to: outputURL, as: .mov)
+                    await MainActor.run { progressCallback(1.0) }
                     continuation.resume(returning: outputURL)
                 } catch {
                     print("Export failed: \(error.localizedDescription)")

@@ -21,6 +21,7 @@ final class SessionManager: ObservableObject {
     @Published var currentTab: SessionTab = .video
     @Published var phase: SessionPhase = .idle   // ✅ Add this
     @Published var isVideoConfirmed: Bool = false
+    @Published var sessionUUID: UUID = UUID()
 
     func reset() {
         videoURL = nil
@@ -30,6 +31,7 @@ final class SessionManager: ObservableObject {
         phase = .idle                            // ✅ reset to idle
         isVideoConfirmed = false
         PoseVideoOverlayView.analyzedVideos.removeAll()
+        sessionUUID = UUID()   // 🔥 add this line
     }
 }
 

@@ -11,67 +11,17 @@ import AVKit
 
 struct CameraContainerView: View {
     @ObservedObject var sessionManager: SessionManager
-    @State private var tempVideoURL: URL? = nil
-    @State private var isConfirming = false
+    var onRecordingFinished: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
-            if let tempURL = tempVideoURL, isConfirming {
-                VStack(spacing: 20) {
-                    Text("Preview your recording")
-                        .font(.title2)
-                        .foregroundColor(.white)
-
-                    VideoPlayer(player: AVPlayer(url: tempURL))
-                        .frame(height: 280)
-                        .cornerRadius(8)
-                        .padding()
-
-                    HStack(spacing: 40) {
-                        Button(action: {
-                            sessionManager.videoURL = tempURL
-                            sessionManager.isAnalyzing = true
-                            sessionManager.phase = .ready
-                            sessionManager.currentTab = .overlay
-                            DispatchQueue.main.async {
-                                dismiss()
-                            }
-                            tempVideoURL = nil
-                            isConfirming = false
-                        }) {
-                            Text("Confirm")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        }
-
-                        Button(action: {
-                            try? FileManager.default.removeItem(at: tempURL)
-                            tempVideoURL = nil
-                            isConfirming = false
-                        }) {
-                            Text("Re-record")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-                    .padding(.horizontal)
-                    .padding(.bottom, 30)
-                }
-                .background(Color.black.edgesIgnoringSafeArea(.all))
-            } else {
-                CameraView { url in
-                    tempVideoURL = url
-                    isConfirming = true
-                }
-                .edgesIgnoringSafeArea(.all)
+            CameraView { url in
+                onRecordingFinished(url)
+                dismiss()
             }
+            .edgesIgnoringSafeArea(.all)
+
             VStack {
                 HStack {
                     Button(action: {

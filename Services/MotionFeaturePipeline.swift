@@ -397,12 +397,6 @@ public struct MotionFeaturePipeline {
         metrics: [MotionPoint],
         lastType: StrokeType?
     ) -> StrokeType {
-        // Use rules:
-        // - rightShoulder.x < leftShoulder.x - 0.1 * shoulderSpan and wristXOffsetRel > +0.2 => .forehand
-        // - rightShoulder.x > leftShoulder.x + 0.1 * shoulderSpan and wristXOffsetRel < -0.2 => .backhand
-        // - If |wristXOffsetRel| <= 0.1, retain lastType.
-        // - Require ≥5 consecutive frames for a new type before switching (persistence).
-        // - After a switch, lockout for 9 frames before allowing another switch.
         var candidate: StrokeType? = nil
         var candidateCount = 0
         var lockout = 0

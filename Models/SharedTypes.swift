@@ -56,11 +56,30 @@ public struct MotionPoint {
     public let hipSpan: CGFloat
     public let wristXOffsetRel: CGFloat
     public let wristHeightRel: CGFloat
-    public let sepDeg: CGFloat
-    public init(time: CMTime, frameId: UUID, energyRearHybrid: CGFloat,
-                shoulderCoilFactor: CGFloat, hipCoilFactor: CGFloat, rotSign: CGFloat,
-                shoulderSpan: CGFloat, hipSpan: CGFloat,
-                wristXOffsetRel: CGFloat, wristHeightRel: CGFloat, sepDeg: CGFloat) {
+//    public let sepDeg: CGFloat
+    
+    // New biomechanical metrics
+    public let footSpan: CGFloat
+    public let forearmAngularSpeed: CGFloat
+    public let wristLinearSpeed: CGFloat
+    public let comSpeed: CGFloat
+    public let handSpeedRatio: CGFloat
+    
+    public init(time: CMTime, frameId: UUID,
+                energyRearHybrid: CGFloat,
+                shoulderCoilFactor: CGFloat,
+                hipCoilFactor: CGFloat,
+                rotSign: CGFloat,
+                shoulderSpan: CGFloat,
+                hipSpan: CGFloat,
+                wristXOffsetRel: CGFloat,
+                wristHeightRel: CGFloat,
+//                sepDeg: CGFloat,
+                footSpan: CGFloat,
+                forearmAngularSpeed: CGFloat,
+                wristLinearSpeed: CGFloat,
+                comSpeed: CGFloat,
+                handSpeedRatio: CGFloat) {
         self.time = time
         self.frameId = frameId
         self.energyRearHybrid = energyRearHybrid
@@ -71,7 +90,11 @@ public struct MotionPoint {
         self.hipSpan = hipSpan
         self.wristXOffsetRel = wristXOffsetRel
         self.wristHeightRel = wristHeightRel
-        self.sepDeg = sepDeg
+        self.footSpan = footSpan
+        self.forearmAngularSpeed = forearmAngularSpeed
+        self.wristLinearSpeed = wristLinearSpeed
+        self.comSpeed = comSpeed
+        self.handSpeedRatio = handSpeedRatio
     }
 }
 

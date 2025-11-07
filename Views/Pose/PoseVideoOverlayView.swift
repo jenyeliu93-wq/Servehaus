@@ -25,6 +25,25 @@ struct PoseVideoOverlayView: View {
     @State private var motionPoints: [MotionPoint] = []
     @State private var phaseSegments: [PhaseSegment] = []
     @State private var selectedMetric: String = "energy"
+    @State private var isScrubbing = false
+    @State private var lastSeekTime = Date(timeIntervalSince1970: 0)
+
+    // All available metric names for trend charts
+    private let allMetricNames: [String] = [
+        "shoulderSpan",
+        "hipSpan",
+        "footSpan",
+        "shoulderCoilFactor",
+        "hipCoilFactor",
+        "wristHeightRel",
+        "wristXOffsetRel",
+        "forearmAngularSpeed",
+        "wristLinearSpeed",
+//        "rotSign",
+        "COMspeed",
+        "handSpeedRatio",
+        "energyRearHybrid"
+    ]
     @State private var currentTimeSeconds: Double = 0.0
     @State private var timeObserver: Any?
     @Environment(\.presentationMode) private var presentationMode
@@ -67,149 +86,164 @@ struct PoseVideoOverlayView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemGroupedBackground))
-                .ignoresSafeArea()
             } else {
-                ScrollView {
-                    ZStack {
-                        ZStack {
-                            VideoPlayer(player: player)
-                                .onTapGesture {
-                                    if player.timeControlStatus == .playing {
-                                        player.pause()
-                                    } else {
+                GeometryReader { geometry in
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            // Video and overlay section
+                            ZStack(alignment: .topLeading) {
+                                // Video is the back layer
+                                VideoPlayer(player: player)
+                                    .frame(height: geometry.size.height * 0.65)
+                                    .onAppear {
+                                        if player.currentItem == nil {
+                                            player.replaceCurrentItem(with: AVPlayerItem(url: videoURL))
+                                        player.isMuted = true   // 🔇 Mute by default
+
+                                        }
+
+                                        if sessionManager.phase == .ready && !sessionManager.isAnalyzing {
+                                            sessionManager.isAnalyzing = true
+                                            sessionManager.phase = .analyzing
+                                            withAnimation(.easeInOut(duration: 0.8)) {
+                                                analysisProgress = 0.01
+                                            }
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                                analyzeVideo()
+                                            }
+                                        }
+
                                         player.play()
+                                        attachTimeObserver()
                                     }
-                                }
-                                .onAppear {
-                                    if player.currentItem == nil {
-                                        player.replaceCurrentItem(with: AVPlayerItem(url: videoURL))
+                                    .onChange(of: videoURL) {_,newURL in
+                                        player.replaceCurrentItem(with: AVPlayerItem(url: newURL))
+                                        player.seek(to: .zero, completionHandler: { _ in
+                                            reconnectOverlayIfNeeded()
+                                        })
+                                        player.play()
+                                        isAnalyzing = true
+                                        analysisProgress = 0.0
+                                        extractedFrames.removeAll()
+                                        motionPoints.removeAll()
+                                        phaseSegments.removeAll()
+                                        analyzeVideo()
                                     }
+                                    .allowsHitTesting(true)
+                                    .onDisappear {
+                                        player.pause()
+                                        detachTimeObserver()
+                                    }
+                                    .padding(.top, geometry.safeAreaInsets.top + 4)
+                                    .padding(.bottom, geometry.safeAreaInsets.bottom + 4)
+                                    .zIndex(0)
 
-                                    // 🔒 确保只触发一次分析流程
-                                    if sessionManager.phase == .ready && !sessionManager.isAnalyzing {
-                                        sessionManager.isAnalyzing = true
-                                        sessionManager.phase = .analyzing
-                                        withAnimation(.easeInOut(duration: 0.8)) {
-                                            analysisProgress = 0.01
+                                // Pose overlay and stroke info above video, below controls
+                                Group {
+                                    PoseOverlayView(joints: currentJoints, activeRegion: activeRegion,sessionID: sessionManager.sessionUUID
+)
+                                    // Stroke Info
+                                    VStack(alignment: .leading) {
+                                        if let activePhase = phaseSegments.first(where: { phase in
+                                            phase.frames.contains { mp in
+                                                abs(mp.time.seconds - player.currentTime().seconds) < 0.05
+                                            }
+                                        }),
+                                        let strokeType = sessionResult?.strokeSegments.first(where: { $0.phases.contains(where: { $0.phase == activePhase.phase }) })?.type {
+                                            Text("🎾 Stroke: \(strokeType == .forehand ? "Forehand" : "Backhand")")
+                                                .font(.headline)
+                                                .foregroundColor(.green)
+                                            Text("Phase: \(activePhase.phase.rawValue.capitalized)")
+                                                .font(.subheadline)
+                                                .foregroundColor(.yellow)
                                         }
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                            analyzeVideo()
-                                        }
+                                        Spacer()
                                     }
-
-                                    player.play()
-                                    attachTimeObserver()
+                                    .padding(.top, 60)
+                                    .padding(.leading, 20)
+                                    .allowsHitTesting(false)
                                 }
-                                .onDisappear {
-                                    // ⚙️ 暂停播放但不重置状态
-                                    player.pause()
-                                    detachTimeObserver()
-                                }
-
-                            if player.timeControlStatus != .playing {
-                                Image(systemName: "play.circle.fill")
-                                    .resizable()
-                                    .frame(width: 64, height: 64)
-                                    .foregroundColor(.white.opacity(0.8))
+                                .allowsHitTesting(false)
+                                .zIndex(0)
                             }
-                        }
-                        // Pose Overlay
-                        PoseOverlayView(joints: currentJoints, activeRegion: activeRegion)
-                            .allowsHitTesting(false)
-                        // Stroke Info
-                        VStack(alignment: .leading) {
-                            if let activePhase = phaseSegments.first(where: { phase in
-                                phase.frames.contains { mp in
-                                    abs(mp.time.seconds - player.currentTime().seconds) < 0.05
-                                }
-                            }),
-                            let strokeType = sessionResult?.strokeSegments.first(where: { $0.phases.contains(where: { $0.phase == activePhase.phase }) })?.type {
-                                Text("🎾 Stroke: \(strokeType == .forehand ? "Forehand" : "Backhand")")
-                                    .font(.headline)
-                                    .foregroundColor(.green)
-                                Text("Phase: \(activePhase.phase.rawValue.capitalized)")
-                                    .font(.subheadline)
-                                    .foregroundColor(.yellow)
-                            }
-                            Spacer()
-                        }
-                        .padding(.top, 60)
-                        .padding(.leading, 20)
-                        // Dismiss Button
-                        VStack {
-                            HStack {
-                                Spacer()
-                                Button(action: {
-                                    player.pause()
-                                    presentationMode.wrappedValue.dismiss()
-                                }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 28))
-                                        .foregroundColor(.white)
+                            // Overlay for analysis progress
+                            .overlay(
+                                Group {
+                                    if isAnalyzing  {
+                                        VStack(spacing: 8) {
+                                            ProgressView(value: analysisProgress)
+                                                .progressViewStyle(LinearProgressViewStyle())
+                                                .frame(width: 200)
+                                            Text(String(format: "Analyzing video… %.0f%%", analysisProgress * 100))
+                                                .font(.footnote)
+                                                .foregroundColor(.white)
+                                        }
                                         .padding()
+                                        .background(.ultraThinMaterial)
+                                        .cornerRadius(12)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                                .allowsHitTesting(false)
+                            )
+
+                            // Metric Trends Section
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("📊 Metric Trends")
+                                    .font(.headline)
+                                ScrollView(.vertical, showsIndicators: false) {
+                                    VStack(alignment: .leading, spacing: 24) {
+                                        ForEach(allMetricNames, id: \.self) { metric in
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                Text(metric)
+                                                    .font(.subheadline)
+                                                    .fontWeight(.medium)
+                                                Group {
+                                                    if isAnalyzing || motionPoints.isEmpty {
+                                                        // Show loading/placeholder while analyzing or no data
+                                                        HStack {
+                                                            Spacer()
+                                                            VStack(spacing: 10) {
+                                                                ProgressView()
+                                                                    .progressViewStyle(CircularProgressViewStyle())
+                                                                Text(isAnalyzing ? "Analyzing metrics…" : "Loading metrics…")
+                                                                    .font(.caption)
+                                                                    .foregroundColor(.secondary)
+                                                            }
+                                                            Spacer()
+                                                        }
+                                                        .frame(height: 200)
+                                                    } else {
+                                                        MetricTrendChartView(
+                                                            motionPoints: motionPoints,
+                                                            phaseSegments: phaseSegments,
+                                                            selectedMetric: metric,
+                                                            currentTime: currentTimeSeconds,
+                                                            scrubTime: $currentTimeSeconds,
+                                                            isScrubbing: $isScrubbing,
+                                                            player: player,
+                                                            lastSeekTime: $lastSeekTime,
+                                                            reconnectOverlayIfNeeded: reconnectOverlayIfNeeded
+                                                        )
+                                                        .id(metric + "_\(motionPoints.count)")
+                                                        .frame(height: 200)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.vertical, 6)
                                 }
                             }
-                            Spacer()
+                            .padding(.horizontal)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(12)
                         }
+                        .padding(.horizontal)
+                        .padding(.bottom, geometry.safeAreaInsets.bottom + 8)
                     }
-                    .frame(height: 360)
-                    .overlay(
-                        Group {
-                            if isAnalyzing  {
-                                VStack(spacing: 8) {
-                                    ProgressView(value: analysisProgress)
-                                        .progressViewStyle(LinearProgressViewStyle())
-                                        .frame(width: 200)
-                                    Text(String(format: "Analyzing video… %.0f%%", analysisProgress * 100))
-                                        .font(.footnote)
-                                        .foregroundColor(.white)
-                                }
-                                .padding()
-                                .background(.ultraThinMaterial)
-                                .cornerRadius(12)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                    )
-                    
-                    VStack(spacing: 12) {
-                        HStack {
-                            Text("📊 Metric Trends")
-                                .font(.headline)
-                            Spacer()
-                            Picker("Metric", selection: $selectedMetric) {
-                                Text("shoulderSpan").tag("shoulderSpan")
-                                Text("hipSpan").tag("hipSpan")
-                                Text("footSpan").tag("footSpan")
-                                Text("shoulderCoilFactor").tag("shoulderCoilFactor")
-                                Text("hipCoilFactor").tag("hipCoilFactor")
-                                Text("wristHeightRel").tag("wristHeightRel")
-                                Text("wristXOffsetRel").tag("wristXOffsetRel")
-                                Text("forearmAngularSpeed").tag("forearmAngularSpeed")
-                                Text("wristLinearSpeed").tag("wristLinearSpeed")
-                                Text("rotSign").tag("rotSign")
-                                Text("COMspeed").tag("COMspeed")
-                                Text("handSpeedRatio").tag("handSpeedRatio")
-                                Text("energyRearHybrid").tag("energyRearHybrid")
-                            }
-                            .pickerStyle(MenuPickerStyle())
-                            .frame(width: 180)
-                        }
-                        MetricTrendChartView(
-                            motionPoints: motionPoints,
-                            phaseSegments: phaseSegments,
-                            selectedMetric: selectedMetric,
-                            currentTime: currentTimeSeconds
-                        )
-                        .frame(height: 200)
-                    }
-                    .padding(.horizontal)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(12)
-                    .padding(.vertical)
                 }
-                .ignoresSafeArea()
             }
         }
     }
@@ -253,6 +287,8 @@ struct PoseVideoOverlayView: View {
                     motionPoints = result.strokeSegments.flatMap { $0.frames }
                     phaseSegments = result.strokeSegments.flatMap { $0.phases }
                     analysisProgress = 1.0
+                    self.isAnalyzing = false
+                    player.seek(to: .zero)
                 }
             } catch {
                 await MainActor.run {
@@ -277,6 +313,10 @@ struct PoseVideoOverlayView: View {
             currentTimeSeconds = time.seconds
             updatePose(for: time)
         }
+        // Watch for currentTimeSeconds changes and seek only if not scrubbing
+        // (This is typically handled by drag gestures now)
+        // If you want to add .onChange for currentTimeSeconds, make sure to check isScrubbing
+        // (No explicit .onChange here; handled in chart gesture)
     }
 
     private func detachTimeObserver() {
@@ -289,11 +329,19 @@ struct PoseVideoOverlayView: View {
     // MARK: - Pose Update
     private func updatePose(for currentTime: CMTime) {
         guard !isAnalyzing else { return }
+        guard !isScrubbing else { return }
         let currentSeconds = currentTime.seconds
         if let closestFrame = extractedFrames.min(by: { abs($0.time.seconds - currentSeconds) < abs($1.time.seconds - currentSeconds) }) {
             DispatchQueue.main.async {
                 currentJoints = closestFrame.joints
             }
+        }
+    }
+
+    private func reconnectOverlayIfNeeded() {
+        if player.currentItem?.outputs.isEmpty ?? true {
+            let newOutput = AVPlayerItemVideoOutput()
+            player.currentItem?.add(newOutput)
         }
     }
 }
@@ -303,38 +351,66 @@ struct MetricTrendChartView: View {
     let phaseSegments: [PhaseSegment]
     let selectedMetric: String
     let currentTime: Double
+    @Binding var scrubTime: Double
+    @Binding var isScrubbing: Bool
+    var player: AVPlayer
+    @Binding var lastSeekTime: Date
+    var reconnectOverlayIfNeeded: () -> Void
     var body: some View {
-        Chart {
-            ForEach(Array(motionPoints.enumerated()), id: \.offset) { i, mp in
-                if let value = valueFor(metric: selectedMetric, in: mp) {
-                    LineMark(
-                        x: .value("Time", mp.time.seconds),
-                        y: .value(selectedMetric, value)
-                    )
-                    .foregroundStyle(color(for: selectedMetric))
-                    .lineStyle(StrokeStyle(lineWidth: 1.8))
-                }
-            }
-            // Live playhead synced to video
-            RuleMark(x: .value("Playhead", currentTime))
-                .foregroundStyle(Color.red)
-                .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 4]))
-                .annotation(position: .top, alignment: .leading) {
-                    if let live = interpolatedValue(at: currentTime) {
-                        Text(String(format: "%@ %.3f",
-                                    selectedMetric == "energy" ? "E" :
-                                    selectedMetric == "wristOffset" ? "W" :
-                                    selectedMetric == "rotSign" ? "R" : "S",
-                                    live))
-                        .font(.caption2)
-                        .padding(4)
-                        .background(.ultraThinMaterial)
-                        .cornerRadius(6)
+        GeometryReader { geo in
+            Chart {
+                ForEach(Array(motionPoints.enumerated()), id: \.offset) { i, mp in
+                    if let value = valueFor(metric: selectedMetric, in: mp) {
+                        LineMark(
+                            x: .value("Time", mp.time.seconds),
+                            y: .value(selectedMetric, value)
+                        )
+                        .foregroundStyle(color(for: selectedMetric))
+                        .lineStyle(StrokeStyle(lineWidth: 1.8))
                     }
                 }
+                // Live playhead synced to video
+                RuleMark(x: .value("Playhead", currentTime))
+                    .foregroundStyle(Color.red)
+                    .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 4]))
+                    .annotation(position: .top, alignment: .leading) {
+                        if let live = interpolatedValue(at: currentTime) {
+                            Text(String(format: "%@ %.3f",
+                                        selectedMetric == "energy" ? "E" :
+                                        selectedMetric == "wristOffset" ? "W" :
+                                        selectedMetric == "rotSign" ? "R" : "S",
+                                        live))
+                            .font(.caption2)
+                            .padding(4)
+                            .background(.ultraThinMaterial)
+                            .cornerRadius(6)
+                        }
+                    }
+            }
+            .chartYScale(domain: yDomain(for: selectedMetric))
+            .animation(.linear(duration: 0.033), value: currentTime)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        guard let first = motionPoints.first, let last = motionPoints.last else { return }
+                        let width = geo.size.width - 32
+                        let fraction = max(0, min(1, value.location.x / width))
+                        let newTime = first.time.seconds + fraction * (last.time.seconds - first.time.seconds)
+                        scrubTime = newTime
+                        isScrubbing = true
+                        if Date().timeIntervalSince(lastSeekTime) > 0.1 {
+                            player.seek(to: CMTime(seconds: newTime, preferredTimescale: 600), completionHandler: { _ in
+                                reconnectOverlayIfNeeded()
+                            })
+                            lastSeekTime = Date()
+                        }
+                    }
+                    .onEnded { _ in
+                        isScrubbing = false
+                        reconnectOverlayIfNeeded()
+                    }
+            )
         }
-        .chartYScale(domain: yDomain(for: selectedMetric))
-        .animation(.linear(duration: 0.033), value: currentTime)
     }
     private func autoDomain(for values: [Double]) -> ClosedRange<Double> {
         guard let min = values.min(), let max = values.max(), min != max else { return -1...1 }
@@ -353,16 +429,15 @@ struct MetricTrendChartView: View {
         switch metric {
         case "shoulderSpan": return Double(mp.shoulderSpan)
         case "hipSpan": return Double(mp.hipSpan)
-        case "footSpan": return Double(mp.sepDeg)
+        case "footSpan": return Double(mp.footSpan)
         case "shoulderCoilFactor": return Double(mp.shoulderCoilFactor)
         case "hipCoilFactor": return Double(mp.hipCoilFactor)
         case "wristHeightRel": return Double(mp.wristHeightRel)
         case "wristXOffsetRel": return Double(mp.wristXOffsetRel)
-        case "forearmAngularSpeed": return nil // Placeholder until computed
-        case "wristLinearSpeed": return nil // Placeholder until computed
-        case "rotSign": return Double(mp.rotSign)
-        case "COMspeed": return nil // Placeholder until computed
-        case "handSpeedRatio": return nil // Placeholder until computed
+        case "forearmAngularSpeed": return Double(mp.forearmAngularSpeed)
+        case "wristLinearSpeed": return Double(mp.wristLinearSpeed)
+        case "COMspeed": return Double(mp.comSpeed)
+        case "handSpeedRatio": return Double(mp.handSpeedRatio)
         case "energyRearHybrid": return Double(mp.energyRearHybrid)
         default: return nil
         }

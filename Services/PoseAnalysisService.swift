@@ -3,6 +3,89 @@ import Vision
 import CoreMedia
 import CoreGraphics
 
+/// MARK: - Biomechanics Consolidation
+/// Consolidates all core biomechanics metrics as static functions for centralized access.
+public struct Biomechanics {
+    /// Compute the Euclidean distance between left and right shoulders.
+    static func shoulderSpan(_ joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> Double? {
+        PoseAnalysisService.shoulderSpan(joints)
+    }
+    /// Compute the Euclidean distance between left and right hips.
+    static func hipSpan(_ joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> Double? {
+        PoseAnalysisService.hipSpan(joints)
+    }
+    /// Compute the Euclidean distance between left and right ankles.
+    static func footSpan(_ joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> Double? {
+        PoseAnalysisService.footSpan(joints)
+    }
+    /// Compute wrist height relative to shoulder midpoint normalized by shoulder span.
+    static func wristHeightRel(_ joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> Double? {
+        PoseAnalysisService.wristHeightRel(joints)
+    }
+    /// Compute wrist horizontal offset relative to root joint normalized by shoulder span.
+    static func wristXOffsetRel(_ joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> Double? {
+        PoseAnalysisService.wristXOffsetRel(joints)
+    }
+    /// Compute the angular speed of the forearm between two frames.
+    static func forearmAngularSpeed(prev: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                    next: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                    dt: Double) -> Double? {
+        PoseAnalysisService.forearmAngularSpeed(prev: prev, next: next, dt: dt)
+    }
+    /// Compute wrist linear speed between two frames.
+    static func wristLinearSpeed(prev: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                 next: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                 dt: Double) -> Double? {
+        guard dt > 0,
+              let prevWrist = PoseAnalysisService.joint(.rightWrist, prev) ?? PoseAnalysisService.joint(.leftWrist, prev),
+              let nextWrist = PoseAnalysisService.joint(.rightWrist, next) ?? PoseAnalysisService.joint(.leftWrist, next)
+        else { return nil }
+        let wristDist = hypot(Double(nextWrist.x - prevWrist.x), Double(nextWrist.y - prevWrist.y))
+        return wristDist / dt
+    }
+    /// Compute center of mass (hip midpoint) speed between two frames.
+    static func comSpeed(prev: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                         next: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                         dt: Double) -> Double? {
+        guard dt > 0,
+              let prevLH = PoseAnalysisService.joint(.leftHip, prev), let prevRH = PoseAnalysisService.joint(.rightHip, prev),
+              let nextLH = PoseAnalysisService.joint(.leftHip, next), let nextRH = PoseAnalysisService.joint(.rightHip, next)
+        else { return nil }
+        let prevCOM = CGPoint(x: (prevLH.x + prevRH.x) / 2.0, y: (prevLH.y + prevRH.y) / 2.0)
+        let nextCOM = CGPoint(x: (nextLH.x + nextRH.x) / 2.0, y: (nextLH.y + nextRH.y) / 2.0)
+        let comDist = hypot(Double(nextCOM.x - prevCOM.x), Double(nextCOM.y - prevCOM.y))
+        return comDist / dt
+    }
+    /// Compute hand speed ratio (leftHandSpeed / rightHandSpeed) between two frames.
+    static func handSpeedRatio(prev: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                               next: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                               dt: Double) -> Double? {
+        guard dt > 0 else { return nil }
+        var leftHandSpeed: Double? = nil
+        var rightHandSpeed: Double? = nil
+        if let prevLeftWrist = PoseAnalysisService.joint(.leftWrist, prev), let nextLeftWrist = PoseAnalysisService.joint(.leftWrist, next) {
+            let dist = hypot(Double(nextLeftWrist.x - prevLeftWrist.x), Double(nextLeftWrist.y - prevLeftWrist.y))
+            leftHandSpeed = dist / dt
+        }
+        if let prevRightWrist = PoseAnalysisService.joint(.rightWrist, prev), let nextRightWrist = PoseAnalysisService.joint(.rightWrist, next) {
+            let dist = hypot(Double(nextRightWrist.x - prevRightWrist.x), Double(nextRightWrist.y - prevRightWrist.y))
+            rightHandSpeed = dist / dt
+        }
+        if let lhs = leftHandSpeed, let rhs = rightHandSpeed, rhs != 0 {
+            return lhs / rhs
+        }
+        return nil
+    }
+    /// Compute the hybrid energy metric (energyRearHybrid).
+    static func energyRearHybrid(prevPrev: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                 prev: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                 next: [VNHumanBodyPoseObservation.JointName: CGPoint],
+                                 dt: Double) -> (energy: Double, footSpan: Double?, wristLinearSpeed: Double?, handSpeedRatio: Double?, comSpeed: Double?)? {
+        PoseAnalysisService.energyRearHybrid(prevPrev: prevPrev, prev: prev, next: next, dt: dt)
+    }
+}
+
+
 /// A utility service providing stateless biomechanics calculations for human pose analysis.
 /// This service computes per-frame biomechanics metrics used to generate `[MotionPoint]` for the `MotionFeaturePipeline`.
 /// It does NOT handle pose detection or phase detection, which belong to other services.
@@ -171,37 +254,19 @@ extension PoseAnalysisService {
     static func energyRearHybrid(prevPrev: [VNHumanBodyPoseObservation.JointName: CGPoint],
                                  prev: [VNHumanBodyPoseObservation.JointName: CGPoint],
                                  next: [VNHumanBodyPoseObservation.JointName: CGPoint],
-                                 dt: Double) -> (energy: Double, footSpan: Double?, wristLinearSpeed: Double?, handSpeedRatio: Double?)? {
+                                 dt: Double) -> (energy: Double, footSpan: Double?, wristLinearSpeed: Double?, handSpeedRatio: Double?, comSpeed: Double?)? {
         guard dt > 0 else { return nil }
-      
-        // Wrist linear speed
-        guard let prevWrist = joint(.rightWrist, prev) ?? joint(.leftWrist, prev),
-              let nextWrist = joint(.rightWrist, next) ?? joint(.leftWrist, next) else { return nil }
-        let wristDist = hypot(Double(nextWrist.x - prevWrist.x), Double(nextWrist.y - prevWrist.y))
-        let wristLinearSpeed = wristDist / dt
-        
-        // Forearm angular speed
-        guard let forearmAngSpeed = forearmAngularSpeed(prev: prev, next: next, dt: dt) else { return nil }
-        
-        // Shoulder coil factors and delta
+
+        // Use Biomechanics static methods to get metrics
+        guard let wristLinearSpeed = Biomechanics.wristLinearSpeed(prev: prev, next: next, dt: dt) else { return nil }
+        guard let forearmAngSpeed = Biomechanics.forearmAngularSpeed(prev: prev, next: next, dt: dt) else { return nil }
         guard let prevShoulderCoil = shoulderCoilFactor(prev: prevPrev, next: prev),
               let nextShoulderCoil = shoulderCoilFactor(prev: prev, next: next) else { return nil }
         let deltaShoulderCoil = nextShoulderCoil - prevShoulderCoil
-        
-        // Hip coil factors and delta
         guard let prevHipCoil = hipCoilFactor(prev: prev, next: prev),
               let nextHipCoil = hipCoilFactor(prev: next, next: next) else { return nil }
         let deltaHipCoil = nextHipCoil - prevHipCoil
-        
-        // Center of mass speed (midpoint between hips)
-        guard let prevLH = joint(.leftHip, prev), let prevRH = joint(.rightHip, prev),
-              let nextLH = joint(.leftHip, next), let nextRH = joint(.rightHip, next) else { return nil }
-        let prevCOM = CGPoint(x: (prevLH.x + prevRH.x) / 2.0, y: (prevLH.y + prevRH.y) / 2.0)
-        let nextCOM = CGPoint(x: (nextLH.x + nextRH.x) / 2.0, y: (nextLH.y + nextRH.y) / 2.0)
-        let comDist = hypot(Double(nextCOM.x - prevCOM.x), Double(nextCOM.y - prevCOM.y))
-        let comSpeed = comDist / dt
-        
-        // Energy calculation
+        guard let comSpeed = Biomechanics.comSpeed(prev: prev, next: next, dt: dt) else { return nil }
         let energy = 0.5 * (
             0.25 * wristLinearSpeed * wristLinearSpeed +
             0.25 * forearmAngSpeed * forearmAngSpeed +
@@ -209,28 +274,9 @@ extension PoseAnalysisService {
             0.20 * deltaHipCoil * deltaHipCoil +
             0.05 * comSpeed * comSpeed
         )
-        
-        // Foot span (optional)
-        let footSpan = footSpan(next)
-        
-        // Hand speed ratio (leftHandSpeed / rightHandSpeed)
-        // Compute left and right wrist speeds
-        var leftHandSpeed: Double? = nil
-        var rightHandSpeed: Double? = nil
-        if let prevLeftWrist = joint(.leftWrist, prev), let nextLeftWrist = joint(.leftWrist, next) {
-            let dist = hypot(Double(nextLeftWrist.x - prevLeftWrist.x), Double(nextLeftWrist.y - prevLeftWrist.y))
-            leftHandSpeed = dist / dt
-        }
-        if let prevRightWrist = joint(.rightWrist, prev), let nextRightWrist = joint(.rightWrist, next) {
-            let dist = hypot(Double(nextRightWrist.x - prevRightWrist.x), Double(nextRightWrist.y - prevRightWrist.y))
-            rightHandSpeed = dist / dt
-        }
-        var handSpeedRatio: Double? = nil
-        if let lhs = leftHandSpeed, let rhs = rightHandSpeed, rhs != 0 {
-            handSpeedRatio = lhs / rhs
-        }
-        
-        return (energy, footSpan, wristLinearSpeed, handSpeedRatio)
+        let footSpan = Biomechanics.footSpan(next)
+        let handSpeedRatio = Biomechanics.handSpeedRatio(prev: prev, next: next, dt: dt)
+        return (energy, footSpan, wristLinearSpeed, handSpeedRatio, comSpeed)
     }
 }
 
@@ -241,9 +287,13 @@ extension PoseAnalysisService {
     ///   - prev: The previous FramePoseResult.
     ///   - next: The next FramePoseResult.
     /// - Returns: A MotionPoint or nil if required data is missing.
+    ///
+    /// Note on `rotSign`:
+    /// The `rotSign` (shoulder coil sign) is a simple indicator (-1, 0, +1) of the direction of shoulder coil movement.
+    /// Unlike other metrics (which are continuous and carry detailed biomechanical information), `rotSign` is intentionally
+    /// kept simple to provide a quick, discrete marker for rotation directionality. This is sufficient for most downstream
+    /// logic that only needs to know the direction rather than the magnitude or nuance of the coil.
     static func computeMotionPoint(prev: FramePoseResult, next: FramePoseResult) -> MotionPoint? {
-//        let dt = next.time.seconds - prev.time.seconds
-//        let dt: Double = next.time.seconds - prev.time.seconds
         let dt = Double(next.time.seconds - prev.time.seconds)
         guard dt > 0 else { return nil }
         // Shoulder coil factor
@@ -258,18 +308,34 @@ extension PoseAnalysisService {
         let rotSign = shoulderCoil.sign
         // Energy hybrid metric and additional secondary biomechanical indicators
         guard let energyResults = energyRearHybrid(prevPrev: prev.joints, prev: prev.joints, next: next.joints, dt: dt) else { return nil }
+
+        let footSpanVal = energyResults.footSpan ?? 0.0
+        let forearmAngSpeedVal = forearmAngularSpeed(prev: prev.joints, next: next.joints, dt: dt) ?? 0.0
+        let wristLinearSpeedVal = energyResults.wristLinearSpeed ?? 0.0
+        let comSpeedVal = energyResults.comSpeed ?? 0.0
+        let handSpeedRatioVal = energyResults.handSpeedRatio ?? 0.0
+
+        // Debug print of computed metric values (only in debug mode)
+//        #if DEBUG
+//        print("Metrics: footSpan=\(footSpanVal), forearmAngularSpeed=\(forearmAngSpeedVal), wristLinearSpeed=\(wristLinearSpeedVal), comSpeed=\(comSpeedVal), handSpeedRatio=\(handSpeedRatioVal)")
+//        #endif
+
         let point: MotionPoint = MotionPoint(
             time: next.time,
             frameId: next.id,
-            energyRearHybrid: CGFloat(energyResults.energy as Double),
-            shoulderCoilFactor: CGFloat(shoulderCoil as Double),
-            hipCoilFactor: CGFloat(hipCoil as Double),
+            energyRearHybrid: CGFloat(energyResults.energy),
+            shoulderCoilFactor: CGFloat(shoulderCoil),
+            hipCoilFactor: CGFloat(hipCoil),
             rotSign: CGFloat(rotSign == .plus ? 1.0 : (rotSign == .minus ? -1.0 : 0.0)),
             shoulderSpan: CGFloat(shoulderSpan(next.joints) ?? 0.0),
             hipSpan: CGFloat(hipSpan(next.joints) ?? 0.0),
-            wristXOffsetRel: CGFloat(wristXOffset as Double),
-            wristHeightRel: CGFloat(wristHeight as Double),
-            sepDeg: 0.0
+            wristXOffsetRel: CGFloat(wristXOffset),
+            wristHeightRel: CGFloat(wristHeight),
+            footSpan: CGFloat(footSpanVal),
+            forearmAngularSpeed: CGFloat(forearmAngSpeedVal),
+            wristLinearSpeed: CGFloat(wristLinearSpeedVal),
+            comSpeed: CGFloat(comSpeedVal),
+            handSpeedRatio: CGFloat(handSpeedRatioVal)
         )
         return point
     }
@@ -297,6 +363,7 @@ extension PoseAnalysisService {
         let results = request.results ?? []
         return results
     }
+    
 
     /// Extracts joint points from a Vision human body pose observation, filtering by confidence.
     ///

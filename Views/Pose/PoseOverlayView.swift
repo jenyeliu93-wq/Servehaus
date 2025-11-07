@@ -11,6 +11,9 @@ import Vision
 struct PoseOverlayView: View {
     let joints: [VNHumanBodyPoseObservation.JointName: CGPoint]
     let activeRegion: CGRect?
+    let sessionID: UUID
+
+    @State private var displayedJoints: [VNHumanBodyPoseObservation.JointName: CGPoint] = [:]
 
     private func sanitized(_ joints: [VNHumanBodyPoseObservation.JointName: CGPoint]) -> [VNHumanBodyPoseObservation.JointName: CGPoint] {
         joints.filter { _, point in
@@ -20,7 +23,7 @@ struct PoseOverlayView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let safeJoints = sanitized(joints)
+            let safeJoints = sanitized(displayedJoints)
             ZStack {
                 // Joints (red dots)
                 ForEach(Array(safeJoints.keys), id: \.self) { joint in
@@ -85,6 +88,16 @@ struct PoseOverlayView: View {
                 }
                 .stroke(Color.blue, lineWidth: 2)
             }
+            .id(sessionID)
+            .onValueChange(of: sessionID) { _ in
+                displayedJoints = [:]
+            }
+            .onValueChange(of: joints) { newJoints in
+                displayedJoints = newJoints
+            }
+            .task {
+                displayedJoints = joints
+            }
         }
     }
 
@@ -117,5 +130,22 @@ struct PoseOverlayView: View {
         y = min(max(y, 0), height)
 
         return CGPoint(x: x, y: y)
+    }
+}
+
+
+extension View {
+    @ViewBuilder
+    func onValueChange<Value: Equatable>(
+        of value: Value,
+        perform action: @escaping (_ newValue: Value) -> Void
+    ) -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            self.onChange(of: value) { oldValue, newValue in
+                action(newValue)
+            }
+        } else {
+            self.onChange(of: value, perform: action)
+        }
     }
 }

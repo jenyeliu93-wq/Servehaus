@@ -22,6 +22,7 @@ struct UploadOrRecordView: View {
     @State private var isRecording = false
     @State private var showAlert = false
     @State private var showRestartButton = false
+    @State private var isUploading = false
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -29,8 +30,20 @@ struct UploadOrRecordView: View {
                 Text("Upload Tennis Session")
                     .font(.title2)
                     .bold()
-                
-                if let url = selectedVideoURL {
+                Spacer()  // 推到最下方
+
+                if isUploading {
+                    VStack(spacing: 16) {
+                        ProgressView("Uploading your video…")
+                            .font(.headline)
+                        Text("Please wait a moment")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(.ultraThinMaterial)
+                    .cornerRadius(12)
+                } else if let url = selectedVideoURL {
                     VideoPlayer(player: AVPlayer(url: url))
                         .frame(height: ((UIApplication.shared.connectedScenes.first as? UIWindowScene)?
                             .screen.bounds.height ?? 600) * 0.36)
@@ -38,15 +51,7 @@ struct UploadOrRecordView: View {
                         .padding()
                     
                     if isConfirming {
-                        HStack(spacing: 20) {
-//                            Button(action: {
-//                                guard let url = selectedVideoURL else { return }
-//                                sessionManager.videoURL = url
-//                                sessionManager.isAnalyzing = true
-//                                sessionManager.phase = .ready
-//                                sessionManager.currentTab = .overlay
-//                                isConfirming = false
-//                            })
+                        HStack(spacing: 60) {
                             Button(action: {
                                 guard let url = selectedVideoURL else {
                                     print("⚠️ Confirm clicked but no selectedVideoURL found")
@@ -66,34 +71,29 @@ struct UploadOrRecordView: View {
 
                                 isConfirming = false
                             }){
-                                Text("✅ Confirm Video")
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                    .padding()
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 50)
-                                    .background(Color.green)
-                                    .cornerRadius(12)
+                                Image(systemName: "checkmark.circle.fill")
+                                    .resizable()
+                                    .frame(width: 60, height: 60)
+                                    .foregroundColor(.green)
+                                    .shadow(radius: 4)
                             }
                             
                             Button(action: {
                                 selectedItem = nil
                                 selectedVideoURL = nil
                             }) {
-                                Text("🔄 Choose Another")
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                    .padding()
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 50)
-                                    .background(Color.red)
-                                    .cornerRadius(12)
+                                Image(systemName: "xmark.circle.fill")
+                                    .resizable()
+                                    .frame(width: 60, height: 60)
+                                    .foregroundColor(.red)
+                                    .shadow(radius: 4)
                             }
                         }
                         .padding(.horizontal)
                         .padding(.bottom, 20)
                     }
                 } else {
+                    Spacer()
                     VStack(spacing: 16) {
                         PhotosPicker(
                             selection: $selectedItem,
@@ -122,18 +122,27 @@ struct UploadOrRecordView: View {
                         }
                     }
                     .padding(.horizontal)
+                    // ✅ 自动适配底部 Safe Area + 额外 40pt 缓冲
+                    .padding(.bottom, ((UIApplication.shared.connectedScenes.first as? UIWindowScene)?
+                        .windows.first?.safeAreaInsets.bottom ?? 20) + 10)
+
                 }
                 
                 Spacer()
             }
             .padding()
             .sheet(isPresented: $isRecording) {
-                CameraContainerView(sessionManager: sessionManager)
+                CameraContainerView(sessionManager: sessionManager) { recordedURL in
+                    selectedVideoURL = recordedURL
+                    isConfirming = true
+                    isRecording = false
+                }
             }
             .onChange(of: selectedItem, initial: false) { _, newItem in
                 print("DEBUG: selectedItem changed to \(String(describing: newItem))")
                 Task {
                     if let item = newItem {
+                        isUploading = true
                         do {
                             if let data = try await item.loadTransferable(type: Data.self) {
                                 let tempURL = FileManager.default.temporaryDirectory
@@ -144,12 +153,14 @@ struct UploadOrRecordView: View {
                                     PoseVideoOverlayView.analyzedVideos.removeAll()
                                     selectedVideoURL = tempURL
                                     isConfirming = true
+                                    isUploading = false
                                 }
                                 print("DEBUG: ✅ Video loaded and ready for confirm")
                             } else {
                                 print("DEBUG: ⚠️ Failed to load video data")
                             }
                         } catch {
+                            isUploading = false
                             print("DEBUG: ❌ Error loading video - \(error)")
                         }
                     } else {
@@ -186,7 +197,7 @@ struct UploadOrRecordView: View {
                         .cornerRadius(12)
                         .padding(.horizontal)
                 }
-                .padding(.bottom, 80) // 确保按钮位于 Tab 上方可见
+                .padding(.bottom, 40) // 确保按钮位于 Tab 上方可见
             }
         }
     }
